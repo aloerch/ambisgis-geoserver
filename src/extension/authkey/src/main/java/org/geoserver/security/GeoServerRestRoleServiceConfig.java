@@ -48,6 +48,37 @@ public class GeoServerRestRoleServiceConfig extends BaseSecurityNamedServiceConf
 
     private String authApiKey;
 
+    /** Exact GeoNode user binding and canonical, atomic roles; disabled for legacy providers. */
+    private boolean strictGeoNodeRoles;
+
+    private int connectTimeout = 30000;
+
+    private int readTimeout = 30000;
+
+    public boolean isStrictGeoNodeRoles() {
+        return strictGeoNodeRoles;
+    }
+
+    public void setStrictGeoNodeRoles(boolean strictGeoNodeRoles) {
+        this.strictGeoNodeRoles = strictGeoNodeRoles;
+    }
+
+    public int getConnectTimeout() {
+        return connectTimeout > 0 ? connectTimeout : 30000;
+    }
+
+    public void setConnectTimeout(int connectTimeout) {
+        this.connectTimeout = connectTimeout;
+    }
+
+    public int getReadTimeout() {
+        return readTimeout > 0 ? readTimeout : 30000;
+    }
+
+    public void setReadTimeout(int readTimeout) {
+        this.readTimeout = readTimeout;
+    }
+
     @Override
     public String getAdminRoleName() {
         return adminGroup;

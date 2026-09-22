@@ -44,4 +44,19 @@
     </dependency>
   </dependencies>
 
+  <!-- AmbisGIS NO-ORACLE candidate: source retained; optional UI is not compiled. -->
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>org/geoserver/importer/web/OraclePanel.java</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
 </project>

@@ -25,10 +25,6 @@
     </dependency>
     <dependency>
       <groupId>org.geotools.jdbc</groupId>
-      <artifactId>gt-jdbc-oracle</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.geotools.jdbc</groupId>
       <artifactId>gt-jdbc-sqlserver</artifactId>
     </dependency>
     <dependency>

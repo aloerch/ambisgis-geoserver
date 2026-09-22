@@ -7,6 +7,7 @@ package org.geoserver.importer.rest.converters;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStreamWriter;
+import net.sf.json.JSONException;
 import net.sf.json.JSONObject;
 import org.geoserver.importer.ImportTask;
 import org.geoserver.importer.Importer;
@@ -55,6 +56,9 @@ public class ImportTaskJSONMessageConverter extends BaseMessageConverter<ImportT
             ImportTask task = reader.task(json);
 
             return task;
+        } catch (JSONException malformed) {
+            // Untrusted parser/conversion messages may contain request data.
+            throw new HttpMessageNotReadableException("Malformed JSON import request.", inputMessage);
         }
     }
 

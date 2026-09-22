@@ -10,6 +10,7 @@ import java.util.Map;
 import org.geoserver.security.oauth2.GeoServerAccessTokenConverter;
 import org.geoserver.security.oauth2.GeoServerOAuthRemoteTokenServices;
 import org.springframework.http.HttpHeaders;
+import org.springframework.security.oauth2.common.exceptions.InvalidTokenException;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
@@ -35,9 +36,13 @@ public class GeoNodeTokenServices extends GeoServerOAuthRemoteTokenServices {
 
     @Override
     protected void transformNonStandardValuesToStandardValues(Map<String, Object> map) {
-        LOGGER.debug("Original map = " + map);
-        map.put("user_name", map.get("issued_to")); // GeoNode sends 'client_id' as 'issued_to'
-        LOGGER.debug("Transformed = " + map);
+        LOGGER.debug("Received GeoNode token validation response");
+        Object principal = map.get("issued_to");
+        if (!(principal instanceof String username) || username.isBlank()) {
+            throw new InvalidTokenException("Token validation response has no valid principal");
+        }
+        map.put("user_name", username);
+        LOGGER.debug("Converted GeoNode token validation response");
     }
 
     @Override

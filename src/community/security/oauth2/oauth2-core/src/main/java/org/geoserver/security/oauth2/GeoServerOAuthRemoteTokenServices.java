@@ -112,8 +112,8 @@ public abstract class GeoServerOAuthRemoteTokenServices extends RemoteTokenServi
 
     protected void verifyTokenResponse(String accessToken, Map<String, Object> checkTokenResponse) {
         if (checkTokenResponse.containsKey("error")) {
-            logger.debug("check_token returned error: " + checkTokenResponse.get("error"));
-            throw new InvalidTokenException(accessToken);
+            logger.debug("Token validation endpoint returned an error");
+            throw new InvalidTokenException("Token validation denied");
         }
     }
 

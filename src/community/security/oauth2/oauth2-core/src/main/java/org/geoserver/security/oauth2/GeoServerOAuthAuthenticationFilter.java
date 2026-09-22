@@ -36,7 +36,10 @@ import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.InsufficientAuthenticationException;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.Transient;
+import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.context.SecurityContextImpl;
 import org.springframework.security.oauth2.client.OAuth2RestOperations;
 import org.springframework.security.oauth2.client.filter.OAuth2ClientAuthenticationProcessingFilter;
 import org.springframework.security.oauth2.client.resource.OAuth2AccessDeniedException;
@@ -47,6 +50,7 @@ import org.springframework.security.oauth2.common.DefaultOAuth2AccessToken;
 import org.springframework.security.oauth2.common.OAuth2AccessToken;
 import org.springframework.security.oauth2.provider.OAuth2Authentication;
 import org.springframework.security.oauth2.provider.authentication.BearerTokenExtractor;
+import org.springframework.security.oauth2.provider.authentication.OAuth2AuthenticationDetails;
 import org.springframework.security.oauth2.provider.token.RemoteTokenServices;
 import org.springframework.security.oauth2.provider.token.ResourceServerTokenServices;
 import org.springframework.security.web.AuthenticationEntryPoint;
@@ -110,6 +114,10 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
     @Override
     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
             throws IOException, ServletException {
+        if (isStatelessBearerAuthentication()) {
+            doStatelessBearerFilter((HttpServletRequest) request, (HttpServletResponse) response, chain);
+            return;
+        }
         // try authenticating from cache (token caching mechanism). If the authentication is found in
         // the cache, the cache key will be null and the authentication set in the security context,
         // otherwise, the cache key will be returned and the authentication in the context will remain unset
@@ -162,6 +170,40 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
         chain.doFilter(request, response);
     }
 
+    // Spring may save a context while committing the response, before our finally block.
+    // Its supported transient marker prevents both early saves and anonymous removal of
+    // an existing browser session's context while this request is still executing.
+    @Transient
+    private static final class StatelessBearerSecurityContext extends SecurityContextImpl {
+        private static final long serialVersionUID = 1L;
+    }
+
+    protected boolean isStatelessBearerAuthentication() {
+        return filterConfig instanceof GeoServerOAuth2FilterConfig config && config.isStatelessBearerAuthentication();
+    }
+
+    private void doStatelessBearerFilter(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+        // The surrounding persistence filter may have loaded an existing browser session.
+        // Keep its context intact, but never use it to authenticate this service request or
+        // replace it with the bearer identity when the persistence filter saves it again.
+        SecurityContext browserContext = SecurityContextHolder.getContext();
+        SecurityContextHolder.setContext(new StatelessBearerSecurityContext());
+        try {
+            String cacheKey = authenticateFromCache(this, request);
+            if (SecurityContextHolder.getContext().getAuthentication() == null) {
+                doAuthenticate(request, response);
+                Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+                if (authentication != null && cacheKey != null) {
+                    tryCacheAuthentication(request, cacheKey, authentication);
+                }
+            }
+            chain.doFilter(request, response);
+        } finally {
+            SecurityContextHolder.setContext(browserContext);
+        }
+    }
+
     /**
      * Tries to cache the authentication if the cache key is not null and the authentication is not already in the
      * cache.
@@ -204,7 +246,7 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
             try {
                 httpRequest.logout();
             } catch (ServletException e) {
-                LOGGER.fine(e.getLocalizedMessage());
+                LOGGER.fine("Servlet logout reported an exception");
             }
             LOGGER.fine("Cleaned out Session Access Token Request!");
         }
@@ -234,6 +276,9 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
     @Override
     public String getCacheKey(HttpServletRequest request) {
         final String access_token = getAccessTokenFromRequest(request);
+        if (isStatelessBearerAuthentication()) {
+            return access_token == null || access_token.trim().isEmpty() ? null : access_token;
+        }
         return access_token != null ? access_token : getCustomSessionCookieValue(request);
     }
 
@@ -249,7 +294,7 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
             for (Cookie c : cookies) {
                 if (c.getName().equalsIgnoreCase(SESSION_COOKIE_NAME)) {
                     if (LOGGER.isLoggable(Level.FINE)) {
-                        LOGGER.fine("Found Custom Session cookie: " + c.getValue());
+                        LOGGER.fine("Found Custom Session cookie");
                     }
                     return c.getValue();
                 }
@@ -283,7 +328,7 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
                 try {
                     request.logout();
                 } catch (ServletException e) {
-                    LOGGER.fine(e.getLocalizedMessage());
+                    LOGGER.fine("Servlet logout reported an exception");
                 }
                 LOGGER.fine("Cleaned out Session Access Token Request!");
             }
@@ -314,14 +359,14 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
         try {
             principal = getPreAuthenticatedPrincipal(request, response);
         } catch (IOException | ServletException e1) {
-            LOGGER.log(Level.FINE, e1.getMessage(), e1);
+            LOGGER.fine("OAuth principal resolution reported an exception");
             principal = null;
         }
 
-        LOGGER.log(Level.FINE, "preAuthenticatedPrincipal = " + principal + ", trying to authenticate");
+        LOGGER.fine("Attempting OAuth principal authentication");
 
         if (principal != null && principal.trim().length() > 0) {
-            if (GeoServerUser.ROOT_USERNAME.equals(principal)) {
+            if (GeoServerUser.ROOT_USERNAME.equals(principal) && !isStatelessBearerAuthentication()) {
                 result = new PreAuthenticatedAuthenticationToken(
                         principal,
                         null,
@@ -344,10 +389,7 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
                     try {
                         roles.addAll(calc.calculateRoles(principal));
                     } catch (IOException e) {
-                        LOGGER.log(
-                                Level.WARNING,
-                                "Error while trying to fetch default Roles with the following Exception cause:",
-                                e.getCause());
+                        LOGGER.warning("OAuth default role lookup reported an exception");
                     }
                 }
 
@@ -389,6 +431,10 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
 
     protected String getPreAuthenticatedPrincipal(HttpServletRequest req, HttpServletResponse resp)
             throws IOException, ServletException {
+
+        if (isStatelessBearerAuthentication()) {
+            return getStatelessBearerPrincipal(req);
+        }
 
         // Make sure the REST Resource Template has been correctly configured
         configureRestTemplate();
@@ -435,14 +481,11 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
                 }
             }
 
-            LOGGER.log(Level.FINE, "Authenticated OAuth request for principal {0}", authentication.getPrincipal());
+            LOGGER.fine("Authenticated OAuth request");
         } catch (HttpClientErrorException.Unauthorized unauthorized) {
             // this exception typically happens when the token has expired (also, if it was
             // invalid/modified)
-            LOGGER.log(
-                    Level.SEVERE,
-                    "Oauth2 OIDC - an error occurred during token validation.  Most likely the token has expired or is invalid/modified.  "
-                            + unauthorized.getMessage());
+            LOGGER.severe("OAuth token validation endpoint rejected credentials");
         } catch (Exception e) {
             if (e instanceof UserRedirectRequiredException || e instanceof InsufficientAuthenticationException) {
                 if (filterConfig.getEnableRedirectAuthenticationEntryPoint()
@@ -475,12 +518,9 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
                 }
             } else if (e instanceof BadCredentialsException || e instanceof ResourceAccessException) {
                 if (e.getCause() instanceof OAuth2AccessDeniedException) {
-                    LOGGER.log(
-                            Level.WARNING,
-                            "Error while trying to authenticate to OAuth2 Provider with the following Exception cause:",
-                            e.getCause());
+                    LOGGER.warning("OAuth provider denied authentication");
                 } else if (e instanceof ResourceAccessException) {
-                    LOGGER.log(Level.SEVERE, "Could not Authorize OAuth2 Resource due to the following exception:", e);
+                    LOGGER.severe("OAuth provider could not be reached");
                 } else if (e instanceof ResourceAccessException
                         || e.getCause() instanceof OAuth2AccessDeniedException) {
                     LOGGER.log(
@@ -489,14 +529,45 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
                     LOGGER.info(
                             "Please refer to the GeoServer OAuth2 Plugin Documentation in order to find the steps for importing the SSH certificates.");
                 } else {
-                    LOGGER.log(
-                            Level.SEVERE,
-                            "Could not Authorize OAuth2 Resource due to the following exception:",
-                            e.getCause());
+                    LOGGER.severe("OAuth credentials were rejected");
                 }
             }
         }
 
+        return resolvePrincipal(authentication, req);
+    }
+
+    private String getStatelessBearerPrincipal(HttpServletRequest req) throws IOException {
+        String accessToken = getAccessTokenFromRequest(req);
+        if (accessToken == null || accessToken.trim().isEmpty()) return null;
+        req.setAttribute(OAUTH2_AUTHENTICATION_TYPE_KEY, OAuth2AuthenticationType.BEARER);
+
+        OAuth2Authentication authentication;
+        try {
+            // Do not dereference the session-scoped OAuth2RestOperations proxy here.
+            GeoServerOAuthRemoteTokenServices services = (GeoServerOAuthRemoteTokenServices) tokenServices;
+            services.setClientId(filterConfig.getCliendId());
+            services.setClientSecret(filterConfig.getClientSecret());
+            services.setCheckTokenEndpointUrl(filterConfig.getCheckTokenEndpointUrl());
+            services.setIntrospectionEndpointUrl(filterConfig.getIntrospectionEndpointUrl());
+            authentication = services.loadAuthentication(accessToken);
+            if (authentication == null || !authentication.isAuthenticated()) return null;
+        } catch (RuntimeException failure) {
+            // Token-service exception messages and bodies can contain credentials.
+            LOGGER.fine("Stateless OAuth bearer verification failed");
+            return null;
+        }
+
+        req.setAttribute(OAuth2AuthenticationDetails.ACCESS_TOKEN_VALUE, accessToken);
+        req.setAttribute(OAuth2AuthenticationDetails.ACCESS_TOKEN_TYPE, OAuth2AccessToken.BEARER_TYPE);
+        authentication.setDetails(getAuthenticationDetailsSource().buildDetails(req));
+        req.setAttribute(OAUTH2_AUTHENTICATION_KEY, authentication);
+        Object claims = authentication.getOAuth2Request().getExtensions().get(OAUTH2_ACCESS_TOKEN_CHECK_KEY);
+        if (claims instanceof Map) req.setAttribute(OAUTH2_ACCESS_TOKEN_CHECK_KEY, claims);
+        return resolvePrincipal(authentication, req);
+    }
+
+    private String resolvePrincipal(Authentication authentication, HttpServletRequest req) throws IOException {
         String username = (authentication != null ? SecurityUtils.getUsername(authentication.getPrincipal()) : null);
         if (username != null && username.trim().length() == 0) username = null;
         try {
@@ -504,7 +575,11 @@ public abstract class GeoServerOAuthAuthenticationFilter extends GeoServerPreAut
                 GeoServerUserGroupService service =
                         getSecurityManager().loadUserGroupService(getUserGroupServiceName());
                 GeoServerUser u = service.getUserByUsername(username);
-                if (u != null && u.isEnabled() == false) {
+                if (u == null && isStatelessBearerAuthentication()) {
+                    // Opt-in service authentication requires a provisioned principal when the
+                    // configured role authority is the local user/group service.
+                    username = null;
+                } else if (u != null && u.isEnabled() == false) {
                     username = null;
                     handleDisabledUser(u, req);
                 }

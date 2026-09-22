@@ -143,12 +143,12 @@ public class GuavaAuthenticationCacheImpl implements AuthenticationCache, GeoSer
     @Override
     public void remove(String filterName, String cacheKey) {
         if (LOGGER.isLoggable(Level.FINE)) {
-            LOGGER.fine("AuthenticationCache removing " + filterName + ", " + cacheKey + " entry");
+            LOGGER.fine("AuthenticationCache removing " + filterName + " entry");
             LOGGER.fine("Cache entries #: " + cache.size());
         }
         cache.invalidate(new AuthenticationCacheKey(filterName, cacheKey));
         if (LOGGER.isLoggable(Level.FINE)) {
-            LOGGER.fine("AuthenticationCache removed " + filterName + ", " + cacheKey + " entry");
+            LOGGER.fine("AuthenticationCache removed " + filterName + " entry");
             LOGGER.fine("Cache entries #: " + cache.size());
         }
     }
@@ -159,7 +159,7 @@ public class GuavaAuthenticationCacheImpl implements AuthenticationCache, GeoSer
         AuthenticationCacheEntry entry = cache.getIfPresent(key);
         if (entry == null) {
             if (LOGGER.isLoggable(Level.FINE)) {
-                LOGGER.fine("AuthenticationCache has no entry for " + filterName + ", " + cacheKey);
+                LOGGER.fine("AuthenticationCache has no entry for " + filterName);
             }
             return null;
         }
@@ -173,7 +173,7 @@ public class GuavaAuthenticationCacheImpl implements AuthenticationCache, GeoSer
         }
         entry.setLastAccessed(System.currentTimeMillis());
         if (LOGGER.isLoggable(Level.FINE)) {
-            LOGGER.fine("AuthenticationCache found an entry for " + filterName + ", " + cacheKey);
+            LOGGER.fine("AuthenticationCache found an entry for " + filterName);
         }
         return entry.getAuthentication();
     }
@@ -189,14 +189,14 @@ public class GuavaAuthenticationCacheImpl implements AuthenticationCache, GeoSer
         timeToLiveSeconds = timeToLiveSeconds != null ? timeToLiveSeconds : this.timeToLiveSeconds;
 
         if (LOGGER.isLoggable(Level.FINE)) {
-            LOGGER.fine("AuthenticationCache adding new entry for " + filterName + ", " + cacheKey);
+            LOGGER.fine("AuthenticationCache adding new entry for " + filterName);
             LOGGER.fine("Cache entries #: " + cache.size());
         }
         cache.put(
                 new AuthenticationCacheKey(filterName, cacheKey),
                 new AuthenticationCacheEntry(auth, timeToIdleSeconds, timeToLiveSeconds));
         if (LOGGER.isLoggable(Level.FINE)) {
-            LOGGER.fine("AuthenticationCache added new entry for " + filterName + ", " + cacheKey);
+            LOGGER.fine("AuthenticationCache added new entry for " + filterName);
             LOGGER.fine("Cache entries #: " + cache.size());
         }
     }
@@ -204,12 +204,12 @@ public class GuavaAuthenticationCacheImpl implements AuthenticationCache, GeoSer
     @Override
     public void put(String filterName, String cacheKey, Authentication auth) {
         if (LOGGER.isLoggable(Level.FINE)) {
-            LOGGER.fine("AuthenticationCache adding new entry for " + filterName + ", " + cacheKey);
+            LOGGER.fine("AuthenticationCache adding new entry for " + filterName);
             LOGGER.fine("Cache entries #: " + cache.size());
         }
         put(filterName, cacheKey, auth, timeToIdleSeconds, timeToLiveSeconds);
         if (LOGGER.isLoggable(Level.FINE)) {
-            LOGGER.fine("AuthenticationCache added new entry for " + filterName + ", " + cacheKey);
+            LOGGER.fine("AuthenticationCache added new entry for " + filterName);
             LOGGER.fine("Cache entries #: " + cache.size());
         }
     }

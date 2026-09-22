@@ -59,6 +59,20 @@ public class GeoServerOAuth2FilterConfig extends PreAuthenticatedUserNameFilterC
      */
     boolean allowUnSecureLogging = false;
 
+    /**
+     * Authenticate each service request using its own bearer token, ignoring browser sessions.
+     * Disabled by default to retain the existing interactive OAuth session contract.
+     */
+    private boolean statelessBearerAuthentication = false;
+
+    public boolean isStatelessBearerAuthentication() {
+        return statelessBearerAuthentication;
+    }
+
+    public void setStatelessBearerAuthentication(boolean statelessBearerAuthentication) {
+        this.statelessBearerAuthentication = statelessBearerAuthentication;
+    }
+
     @Override
     public boolean providesAuthenticationEntryPoint() {
         return true;

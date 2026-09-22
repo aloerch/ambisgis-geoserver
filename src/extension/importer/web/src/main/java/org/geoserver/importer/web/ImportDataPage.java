@@ -347,17 +347,6 @@ public class ImportDataPage extends GeoServerSecuredPage {
                 return new PostGISPanel(panelId);
             }
         },
-        ORACLE(DataIcon.DATABASE) {
-            @Override
-            ImportSourcePanel createPanel(String panelId) {
-                return new OraclePanel(panelId);
-            }
-
-            @Override
-            boolean isAvailable() {
-                return isDataStoreFactoryAvaiable("org.geotools.data.oracle.OracleNGDataStoreFactory");
-            }
-        },
         SQLSERVER(DataIcon.DATABASE) {
             @Override
             ImportSourcePanel createPanel(String panelId) {

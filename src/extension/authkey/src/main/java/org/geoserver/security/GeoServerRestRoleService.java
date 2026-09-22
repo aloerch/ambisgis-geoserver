@@ -4,6 +4,9 @@
  */
 package org.geoserver.security;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.jayway.jsonpath.JsonPath;
@@ -14,11 +17,15 @@ import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -42,6 +49,8 @@ import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriUtils;
+import org.apache.http.impl.client.HttpClients;
 
 /** @author Alessio Fabiani, GeoSolutions S.A.S. */
 public class GeoServerRestRoleService extends AbstractGeoServerSecurityService implements GeoServerRoleService {
@@ -50,7 +59,8 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
 
     static final Map<String, String> emptyMap = Collections.emptyMap();
 
-    static Cache<String, String> cachedResponses;
+    // Membership and service credentials are scoped to this configured service instance.
+    Cache<String, String> cachedResponses;
 
     /**
      * Sets a specified timeout value, in milliseconds, to be used when opening a communications link to the resource
@@ -82,6 +92,12 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
      */
     static final int READ_TIMEOUT = 30000;
 
+    // JsonPath/json-smart accepts JavaScript-like syntax and duplicate keys. Strict
+    // membership responses require one complete unambiguous JSON document instead.
+    private static final ObjectMapper STRICT_JSON = new ObjectMapper()
+            .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+
     private RestTemplate restTemplate;
 
     private static String rolePrefix = "ROLE_";
@@ -109,6 +125,14 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
     public void initializeFromConfig(SecurityNamedServiceConfig config) throws IOException {
         super.initializeFromConfig(config);
         restRoleServiceConfig = (GeoServerRestRoleServiceConfig) config;
+        adminGroup = null;
+        groupAdminGroup = null;
+        restTemplate = null;
+        if (restRoleServiceConfig.isStrictGeoNodeRoles()
+                && (!isEmpty(restRoleServiceConfig.getAdminRoleName())
+                        || !isEmpty(restRoleServiceConfig.getGroupAdminRoleName()))) {
+            throw new IOException("Strict GeoNode mapping requires the authenticated admin-role endpoint");
+        }
         if (!isEmpty(restRoleServiceConfig.getAdminRoleName())) {
             this.adminGroup = restRoleServiceConfig.getAdminRoleName();
         }
@@ -181,6 +205,9 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
 
                 @Override
                 public Object executeWithContext(String json) throws Exception {
+                    if (restRoleServiceConfig.isStrictGeoNodeRoles()) {
+                        return strictUserRoles(json, username);
+                    }
                     try {
                         List<Object> rolesString = JsonPath.read(
                                 json, restRoleServiceConfig.getUsersJSONPath().replace("${username}", username));
@@ -220,21 +247,76 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
             };
             return (SortedSet<GeoServerRole>) connectToRESTEndpoint(
                     resolveEnvironmentValue(restRoleServiceConfig.getBaseUrl()),
-                    restRoleServiceConfig.getUsersRESTEndpoint() + "/" + username,
-                    restRoleServiceConfig.getUsersJSONPath().replace("${username}", username),
+                    restRoleServiceConfig.getUsersRESTEndpoint() + "/"
+                            + UriUtils.encodePathSegment(username, StandardCharsets.UTF_8),
+                    restRoleServiceConfig.isStrictGeoNodeRoles()
+                            ? "$.users"
+                            : restRoleServiceConfig.getUsersJSONPath().replace("${username}", username),
                     resolveEnvironmentValue(restRoleServiceConfig.getAuthApiKey()),
                     callback);
         } catch (Exception ex) {
-            Logger.getLogger(getClass().getName()).log(Level.FINEST, null, ex);
+            // Never retain a prefix of a malformed role array or log a credential-bearing body.
+            LOGGER.fine("REST user-role lookup failed");
+            roles.clear();
         }
 
         return Collections.unmodifiableSortedSet(roles);
     }
 
+    private static Map<?, ?> strictObject(String json) throws IOException {
+        Object value = STRICT_JSON.readValue(json, Object.class);
+        if (!(value instanceof Map<?, ?> object)) throw new IOException("Invalid GeoNode JSON object");
+        return object;
+    }
+
+    private List<String> strictRoleNames(String json) throws IOException {
+        Object value = strictObject(json).get("groups");
+        if (!(value instanceof List<?> groups)) throw new IOException("Invalid GeoNode role-list response");
+        List<String> result = new ArrayList<>();
+        for (Object group : groups) {
+            if (!(group instanceof String role)) throw new IOException("Invalid GeoNode role value");
+            strictRole(role);
+            result.add(role);
+        }
+        return result;
+    }
+
+    private GeoServerRole strictRole(String role) throws IOException {
+        if (role == null || !role.matches("[a-z][a-z0-9_-]{0,149}") || role.startsWith("role_")
+                || Set.of("administrator", "group_admin", "group-admin", "authenticated", "anonymous", "any", "root").contains(role)) {
+            throw new IOException("Noncanonical or reserved GeoNode role");
+        }
+        return createRoleObject(role);
+    }
+
+    private SortedSet<GeoServerRole> strictUserRoles(String json, String username) throws IOException {
+        Object usersValue = strictObject(json).get("users");
+        if (!(usersValue instanceof List<?> users)) throw new IOException("Invalid GeoNode users response");
+        SortedSet<GeoServerRole> result = new TreeSet<>();
+        if (users.isEmpty()) return Collections.unmodifiableSortedSet(result);
+        if (users.size() != 1 || !(users.get(0) instanceof Map<?, ?> user)
+                || !username.equals(user.get("username")) || !(user.get("groups") instanceof List<?> groups)) {
+            throw new IOException("GeoNode role response does not bind the exact requested identity");
+        }
+        for (Object group : groups) {
+            if (!(group instanceof String role)) throw new IOException("Invalid GeoNode role value");
+            result.add(strictRole(role));
+        }
+        if (!result.isEmpty()) {
+            GeoServerRole admin = getAdminRole();
+            if (admin == null) throw new IOException("GeoNode administrative mapping unavailable");
+            if (result.contains(admin)) {
+                result.clear();
+                result.add(GeoServerRole.ADMIN_ROLE);
+            }
+        }
+        return Collections.unmodifiableSortedSet(result);
+    }
+
     protected SortedSet<GeoServerRole> fixGeoServerRoles(SortedSet<GeoServerRole> roles) {
         // Check if is an ADMIN
         GeoServerRole adminRole = getAdminRole();
-        if (roles.contains(GeoServerRole.ADMIN_ROLE) || roles.contains(adminRole)) {
+        if (roles.contains(GeoServerRole.ADMIN_ROLE) || (adminRole != null && roles.contains(adminRole))) {
             roles.clear();
             roles.add(GeoServerRole.ADMIN_ROLE);
         }
@@ -269,9 +351,15 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
                 @Override
                 public Object executeWithContext(String json) throws Exception {
                     try {
-                        List<String> rolesString = JsonPath.read(json, restRoleServiceConfig.getRolesJSONPath());
+                        List<String> rolesString = restRoleServiceConfig.isStrictGeoNodeRoles()
+                                ? strictRoleNames(json)
+                                : JsonPath.read(json, restRoleServiceConfig.getRolesJSONPath());
 
                         for (String role : rolesString) {
+                            if (restRoleServiceConfig.isStrictGeoNodeRoles()) {
+                                roles.add(strictRole(role));
+                                continue;
+                            }
                             if (role.startsWith(rolePrefix)) {
                                 // remove standard role prefix
                                 role = role.substring(rolePrefix.length());
@@ -293,7 +381,8 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
                     resolveEnvironmentValue(restRoleServiceConfig.getAuthApiKey()),
                     callback);
         } catch (Exception ex) {
-            Logger.getLogger(getClass().getName()).log(Level.FINEST, null, ex);
+            LOGGER.fine("REST role-list lookup failed");
+            roles.clear();
         }
 
         return Collections.unmodifiableSortedSet(roles);
@@ -306,7 +395,7 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
 
     @Override
     public GeoServerRole createRoleObject(String role) throws IOException {
-        return new GeoServerRole(rolePrefix + (convertToUpperCase ? role.toUpperCase() : role));
+        return new GeoServerRole(rolePrefix + (convertToUpperCase ? role.toUpperCase(Locale.ROOT) : role));
     }
 
     @Override
@@ -328,7 +417,9 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
                 @Override
                 public Object executeWithContext(String json) throws Exception {
                     try {
-                        List<String> rolesString = JsonPath.read(json, restRoleServiceConfig.getRolesJSONPath());
+                        List<String> rolesString = restRoleServiceConfig.isStrictGeoNodeRoles()
+                                ? strictRoleNames(json)
+                                : JsonPath.read(json, restRoleServiceConfig.getRolesJSONPath());
 
                         for (String targetRole : rolesString) {
                             if (targetRole.startsWith(rolePrefix)) {
@@ -380,6 +471,12 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
                     @Override
                     public Object executeWithContext(String json) throws Exception {
                         try {
+                            if (restRoleServiceConfig.isStrictGeoNodeRoles()) {
+                                Object targetRole = strictObject(json).get("adminRole");
+                                // The controlled endpoint reserves this role exclusively for superusers.
+                                if (!"admin".equals(targetRole)) throw new IOException("Invalid GeoNode admin mapping");
+                                return strictRole("admin");
+                            }
                             String targetRole = JsonPath.read(json, restRoleServiceConfig.getAdminRoleJSONPath());
 
                             if (targetRole.startsWith(rolePrefix)) {
@@ -402,8 +499,9 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
                         resolveEnvironmentValue(restRoleServiceConfig.getAuthApiKey()),
                         callback);
             } catch (Exception ex) {
-                Logger.getLogger(getClass().getName()).log(Level.FINEST, null, ex);
+                LOGGER.fine("REST administrative-role lookup failed");
             }
+            return null;
         }
 
         try {
@@ -450,8 +548,11 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
 
     private ClientHttpRequestFactory clientHttpRequestFactory() {
         HttpComponentsClientHttpRequestFactory factory = new HttpComponentsClientHttpRequestFactory();
-        factory.setReadTimeout(READ_TIMEOUT);
-        factory.setConnectTimeout(CONN_TIMEOUT);
+        factory.setReadTimeout(restRoleServiceConfig.getReadTimeout());
+        factory.setConnectTimeout(restRoleServiceConfig.getConnectTimeout());
+        factory.setConnectionRequestTimeout(restRoleServiceConfig.getConnectTimeout());
+        // An endpoint redirect must not forward the separate role-service credential.
+        factory.setHttpClient(HttpClients.custom().disableRedirectHandling().build());
         return factory;
     }
 
@@ -465,7 +566,7 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
             throws Exception {
         final String restEndPoint = roleRESTBaseURL + roleRESTEndpoint + roleJSONPath;
         // First search on cache
-        final String hash = getHash(restEndPoint);
+        final String hash = cacheKey(restEndPoint, authApiKey);
 
         try {
             // If the key wasn't in the "easy to compute" group, we need to
@@ -514,17 +615,20 @@ public class GeoServerRestRoleService extends AbstractGeoServerSecurityService i
 
             return callback.executeWithContext(cachedResponse);
         } catch (ExecutionException e) {
-            LOGGER.log(Level.FINEST, e.getMessage(), e);
-            return null;
+            // Preserve failure as failure: callers must not treat null as a valid role set.
+            throw new IOException("REST role lookup unavailable");
         }
+    }
+
+    private static String cacheKey(String endpoint, String credential) throws NoSuchAlgorithmException {
+        // Credential rotation cannot hit a response authorized with the previous key.
+        return getHash(endpoint + "\u0000" + (credential == null ? "" : credential));
     }
 
     private static String getHash(String stringToEncrypt) throws NoSuchAlgorithmException {
         MessageDigest messageDigest = MessageDigest.getInstance("SHA-256");
-        messageDigest.update(stringToEncrypt.getBytes());
-        final String encryptedString = new String(messageDigest.digest());
-
-        return encryptedString;
+        messageDigest.update(stringToEncrypt.getBytes(StandardCharsets.UTF_8));
+        return HexFormat.of().formatHex(messageDigest.digest());
     }
 
     /**

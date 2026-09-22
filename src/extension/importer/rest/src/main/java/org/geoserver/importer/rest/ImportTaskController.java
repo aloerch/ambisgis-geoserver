@@ -6,6 +6,8 @@ package org.geoserver.importer.rest;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import org.geoserver.filters.NoJpeg2000Policy;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.ArrayList;
@@ -345,6 +347,38 @@ public class ImportTaskController extends ImportBaseController {
             items = upload.parseRequest(request);
         } catch (FileUploadException e) {
             throw new RestException("File upload failed", HttpStatus.INTERNAL_SERVER_ERROR, e);
+        }
+
+        // Check all parts before creating an import directory or accepting any item.
+        // Commons FileUpload owns staging; delete its temporary parts on rejection.
+        try {
+            for (FileItem item : items) {
+                if (item.getName() == null) continue;
+                try (InputStream input = item.getInputStream()) {
+                    if (NoJpeg2000Policy.filename(item.getName())
+                            || NoJpeg2000Policy.format(item.getContentType())
+                            || NoJpeg2000Policy.signature(input.readNBytes(12))) {
+                        throw new RestException(NoJpeg2000Policy.MESSAGE, HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+                    }
+                }
+                // FileUpload parts can be reopened. Preflight ZIP entries before any persistent task write.
+                try (InputStream input = item.getInputStream()) {
+                    if (NoJpeg2000Policy.zipSignature(input.readNBytes(12))) {
+                        try (InputStream archive = item.getInputStream()) {
+                            if (NoJpeg2000Policy.archive(archive)) {
+                                throw new RestException(NoJpeg2000Policy.MESSAGE, HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (IOException | RestException error) {
+            for (FileItem item : items) item.delete();
+            if (error instanceof RestException) throw (RestException) error;
+            if (error instanceof NoJpeg2000Policy.InputLimit) {
+                throw new RestException(NoJpeg2000Policy.LIMIT_MESSAGE, HttpStatus.PAYLOAD_TOO_LARGE);
+            }
+            throw new RestException("Unable to inspect upload", HttpStatus.BAD_REQUEST, error);
         }
 
         // look for a directory to hold the files

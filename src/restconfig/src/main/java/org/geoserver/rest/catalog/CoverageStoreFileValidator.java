@@ -23,6 +23,9 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.geoserver.rest.util.RESTFileValidatorCallback;
+import org.geoserver.filters.NoJpeg2000Policy;
+import org.geoserver.rest.RestException;
+import org.springframework.http.HttpStatus;
 import org.geoserver.util.FileTypes;
 import org.geotools.api.coverage.grid.Format;
 import org.geotools.coverage.grid.io.AbstractGridCoverage2DReader;
@@ -121,6 +124,9 @@ public class CoverageStoreFileValidator implements RESTFileValidatorCallback {
     }
 
     private void acceptFile(Path tempfile) throws IOException {
+        if (NoJpeg2000Policy.tree(tempfile)) {
+            throw new RestException(NoJpeg2000Policy.MESSAGE, HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        }
 
         AbstractGridCoverage2DReader reader = null;
         try {
@@ -187,6 +193,9 @@ public class CoverageStoreFileValidator implements RESTFileValidatorCallback {
         try {
             tempDir = createTempDirectory();
             unzip(tempfile, tempDir);
+            if (NoJpeg2000Policy.tree(tempDir)) {
+                throw new RestException(NoJpeg2000Policy.MESSAGE, HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+            }
             Path primaryFile = findPrimaryFile(tempDir); // might be dir
             if (primaryFile == null) {
                 throw new IOException("couldnt find a primary converage file inside the zip");
