@@ -2113,6 +2113,7 @@ public class Importer implements DisposableBean, ApplicationListener {
     @Override
     public void destroy() throws Exception {
         asynchronousJobs.shutdown();
+        synchronousJobs.shutdown();
         contextStore.destroy();
     }
 
