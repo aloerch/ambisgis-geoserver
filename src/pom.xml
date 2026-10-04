@@ -134,7 +134,7 @@
     <!-- ================================ -->
     <checkstyle.skip>false</checkstyle.skip>
     <errorProneFlags></errorProneFlags>
-    <git.commit.runOnlyOnce>true</git.commit.runOnlyOnce>
+    <git.commit.runOnlyOnce>false</git.commit.runOnlyOnce>
     <git.commit.useNative>false</git.commit.useNative>
     <lint>deprecation,unchecked</lint>
     <pom.fmt.action>sort</pom.fmt.action>
@@ -1490,7 +1490,8 @@
           <failOnNoGitDirectory>false</failOnNoGitDirectory>
           <skipPoms>false</skipPoms>
           <verbose>false</verbose>
-          <injectAllReactorProjects>true</injectAllReactorProjects>
+          <!-- The owned aggregate contains several independent Git roots. -->
+          <injectAllReactorProjects>false</injectAllReactorProjects>
           <runOnlyOnce>${git.commit.runOnlyOnce}</runOnlyOnce>
           <!--
        In order to use native git (3+ times faster) add the following in ~/.m2/settings.xml
